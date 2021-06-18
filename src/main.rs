@@ -2,6 +2,9 @@ use chrono::prelude::*;
 use clap::Clap;
 use std::io::{Error, ErrorKind};
 use yahoo_finance_api as yahoo;
+use async_trait::async_trait;
+
+/// Using https://docs.rs/async-std/1.9.0/async_std/ for async
 
 #[derive(Clap)]
 #[clap(
@@ -19,6 +22,7 @@ struct Opts {
 ///
 /// A trait to provide a common interface for all signal calculations.
 ///
+#[async_trait]
 trait StockSignal {
 
     ///
@@ -35,32 +39,35 @@ trait StockSignal {
     ///
     /// The signal (using the provided type) or `None` on error/invalid data.
     ///
-    fn calculate(&self, series: &[f64]) -> Option<Self::SignalType>;
+    async fn calculate(&self, series: &[f64]) -> Option<Self::SignalType>;
 }
 
 struct PriceDifference;
+#[async_trait]
 impl StockSignal for PriceDifference {
     type SignalType = (f64, f64);
 
-    fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
-        price_diff(&series)
+    async fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
+        price_diff(&series).await
     }
 }
 struct MinPrice;
+#[async_trait]
 impl StockSignal for MinPrice{
     type SignalType = f64;
 
-    fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
-        min(series)
+    async fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
+        min(series).await
     }
 }
 
 struct MaxPrice;
+#[async_trait]
 impl StockSignal for MaxPrice {
     type SignalType = f64;
 
-    fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
-        max(series)
+    async fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
+        max(series).await
     }
 }
 
@@ -68,9 +75,10 @@ struct WindowedSMA {
     window_size: usize,
 }
 
+#[async_trait]
 impl StockSignal for WindowedSMA { 
     type SignalType = Vec<f64>;
-    fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
+    async fn calculate(&self, series: &[f64]) -> Option<Self::SignalType> {
         n_window_sma(self.window_size, series)
     }
 }
@@ -83,7 +91,7 @@ impl StockSignal for WindowedSMA {
 ///
 /// A tuple `(absolute, relative)` difference.
 ///
-fn price_diff(a: &[f64]) -> Option<(f64, f64)> {
+async fn price_diff(a: &[f64]) -> Option<(f64, f64)> {
     if !a.is_empty() {
         // unwrap is safe here even if first == last
         let (first, last) = (a.first().unwrap(), a.last().unwrap());
@@ -115,7 +123,7 @@ fn n_window_sma(n: usize, series: &[f64]) -> Option<Vec<f64>> {
 ///
 /// Find the maximum in a series of f64
 ///
-fn max(series: &[f64]) -> Option<f64> {
+async fn max(series: &[f64]) -> Option<f64> {
     if series.is_empty() {
         None
     } else {
@@ -126,7 +134,7 @@ fn max(series: &[f64]) -> Option<f64> {
 ///
 /// Find the minimum in a series of f64
 ///
-fn min(series: &[f64]) -> Option<f64> {
+async fn min(series: &[f64]) -> Option<f64> {
     if series.is_empty() {
         None
     } else {
@@ -138,7 +146,7 @@ fn min(series: &[f64]) -> Option<f64> {
 /// Retrieve data from a data source and extract the closing prices. 
 /// Errors during download are mapped onto io::Errors as InvalidData.
 ///
-fn fetch_closing_data(
+async fn fetch_closing_data(
     symbol: &str,
     beginning: &DateTime<Utc>,
     end: &DateTime<Utc>,
@@ -147,6 +155,7 @@ fn fetch_closing_data(
 
     let response = provider
         .get_quote_history(symbol, *beginning, *end)
+        .await
         .map_err(|_| Error::from(ErrorKind::InvalidData))?;
     let mut quotes = response
         .quotes()
@@ -159,7 +168,8 @@ fn fetch_closing_data(
     }
 }
 
-fn main() -> std::io::Result<()> {
+#[async_std::main]
+async fn main() -> std::io::Result<()> {
     let opts = Opts::parse();
     let from: DateTime<Utc> = opts.from.parse().expect("Couldn't parse 'from' date");
     let to = Utc::now();
@@ -167,13 +177,13 @@ fn main() -> std::io::Result<()> {
     // a simple way to output a CSV header
     println!("period start,symbol,price,change %,min,max,30d avg");
     for symbol in opts.symbols.split(',') {
-        let closes = fetch_closing_data(&symbol, &from, &to)?;
+        let closes = fetch_closing_data(&symbol, &from, &to).await?;
         if !closes.is_empty() {
                 // min/max of the period. unwrap() because those are Option types
-                let period_max: f64 = max(&closes).unwrap();
-                let period_min: f64 = min(&closes).unwrap();
+                let period_max: f64 = max(&closes).await.unwrap();
+                let period_min: f64 = min(&closes).await.unwrap();
                 let last_price = *closes.last().unwrap_or(&0.0);
-                let (_, pct_change) = price_diff(&closes).unwrap_or((0.0, 0.0));
+                let (_, pct_change) = price_diff(&closes).await.unwrap_or((0.0, 0.0));
                 let sma = n_window_sma(30, &closes).unwrap_or_default();
 
             // a simple way to output CSV data
